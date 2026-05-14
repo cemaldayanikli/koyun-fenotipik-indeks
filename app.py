@@ -22,6 +22,7 @@ from openpyxl import load_workbook
 # ═══════════════════════════════════════════════════════════════════════════
 
 REQUIRED_COLUMNS = {
+    'koyun_irki':  ['koyun ırkı', 'koyun irki', 'ırk', 'irk'],
     'koyun_no':    ['koyun no', 'koyunno'],
     'koc_no':      ['koç no', 'kocno'],
     'koyun_yas':   ['koyun yaş', 'koyunyas'],
@@ -791,6 +792,7 @@ cm_auto = find_columns(df_raw)
 
 # Alan etiketleri ve zorunlu olanlar
 FIELD_LABELS = {
+    'koyun_irki':  'Koyun Irkı (filtre için)',
     'koyun_no':    'Koyun No ★',
     'koc_no':      'Koç No',
     'koyun_yas':   'Koyun Yaş',
@@ -858,6 +860,32 @@ c3.metric('Zorunlu Eksik', len(eksik_zorunlu))
 
 if eksik_zorunlu:
     st.error(f"Zorunlu alanlar eksik: {[FIELD_LABELS[k] for k in eksik_zorunlu]}. Yukarıdan eşleştir.")
+
+# Irk Filtresi — eşleşmişse, kullanıcı bir veya birden fazla ırk seçebilir
+if 'koyun_irki' in cm:
+    st.subheader('Irk Filtresi')
+    irk_col = cm['koyun_irki']
+    unique_irklar = sorted(
+        {str(v).strip() for v in df_raw[irk_col].dropna().tolist() if str(v).strip()}
+    )
+    irk_sess_key = f'irk_filter_{irk_col}'
+    if irk_sess_key not in st.session_state:
+        st.session_state[irk_sess_key] = unique_irklar  # varsayılan: hepsi seçili
+
+    selected_irklar = st.multiselect(
+        f'"{irk_col}" sütununda hangi ırklar hesaplansın?',
+        options=unique_irklar,
+        key=irk_sess_key,
+        help='Birden fazla ırk varsa sadece istediklerini seç. Boş bırakırsan hepsi dahil sayılır.',
+    )
+    if selected_irklar and len(selected_irklar) < len(unique_irklar):
+        before = len(df_raw)
+        df_raw = df_raw[df_raw[irk_col].astype(str).str.strip().isin(selected_irklar)].reset_index(drop=True)
+        st.info(f"Irk filtresi: **{', '.join(selected_irklar)}** — {before} → {len(df_raw)} satır.")
+    elif not selected_irklar:
+        st.warning('Hiç ırk seçilmedi — tüm satırlar dahil edildi.')
+    else:
+        st.caption(f'Tüm ırklar dahil ({len(unique_irklar)} ırk, {len(df_raw)} satır).')
 
 # Ölüm Değerleri — dinamik seçim (Durumu sütunundaki hangi değerler "kuzu ölümü"?)
 olum_checker = is_olum  # varsayılan
