@@ -483,7 +483,15 @@ def to_excel_bytes(result: pd.DataFrame, params: dict, kalite: dict) -> bytes:
         for sh, df_ in [('Fenotipik Indeks', result), ('Ayarlar', params_df)]:
             ws = xw.sheets[sh]
             for i, col in enumerate(df_.columns):
-                width = max(12, min(28, df_[col].astype(str).map(len).max() if len(df_) else 12, len(str(col)) + 2))
+                if len(df_):
+                    try:
+                        data_max = max((len(str(v)) for v in df_[col].tolist()), default=12)
+                    except Exception:
+                        data_max = 12
+                else:
+                    data_max = 12
+                header_len = len(str(col)) + 2
+                width = max(12, min(28, max(data_max, header_len)))
                 ws.set_column(i, i, width)
     return bio.getvalue()
 
