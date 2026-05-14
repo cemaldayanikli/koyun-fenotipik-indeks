@@ -77,8 +77,12 @@ DEFAULTS = {
     'caa_zero':     0.112,
     'caa_low':      0.311,
     'caa_mid':      0.35,
-    # Erken Kızgınlık puanı için grup kaynağı: 'asim' veya 'dogum'
+    # Erken Kızgınlık puanı için grup kaynağı: 'asim', 'dogum' veya 'grup_no'
     'kizginlik_kaynak': 'asim',
+    # Aşım/Doğum tarihinden grup hesaplama eşikleri (ISO hafta no)
+    'w_grup1_max': 23,
+    'w_grup2_eq':  24,
+    'w_grup3_max': 26,
 }
 
 
@@ -153,8 +157,10 @@ def _is_numeric(v) -> bool:
         return False
 
 
-def quality_report(df: pd.DataFrame, cm: dict) -> dict:
+def quality_report(df: pd.DataFrame, cm: dict, olum_checker=None) -> dict:
     """'2-Veri Kalite Kontrol' sayfasının Python karşılığı."""
+    if olum_checker is None:
+        olum_checker = is_olum
     r = {}
     if 'koyun_no' in cm:
         kn = df[cm['koyun_no']].dropna()
@@ -179,7 +185,7 @@ def quality_report(df: pd.DataFrame, cm: dict) -> dict:
             r[label] = int(df[cm[k]].isna().sum())
     # Ölüm istatistikleri
     if 'durumu' in cm:
-        ol = df[cm['durumu']].apply(is_olum)
+        ol = df[cm['durumu']].apply(olum_checker)
         r['toplam_olum'] = int(ol.sum())
         # Ölüm yaşı: olum_yas varsa onu kullan, yoksa durum_tarih - kuzu_dogum
         oy = None
@@ -196,8 +202,12 @@ def quality_report(df: pd.DataFrame, cm: dict) -> dict:
     return r
 
 
-def clean_data(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
+def clean_data(df: pd.DataFrame, cm: dict, P: dict | None = None, olum_checker=None) -> pd.DataFrame:
     """Virgül düzeltme, 90g ağırlık hesabı, aşım grubu, yaşama gücü."""
+    if olum_checker is None:
+        olum_checker = is_olum
+    if P is None:
+        P = DEFAULTS
     df = df.copy()
     for ck in ('dogum_ag', 'canli_ag'):
         if ck in cm:
@@ -234,7 +244,7 @@ def clean_data(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
                               d + ((c2 - d) / y) * 90, np.nan)
 
     if 'durumu' in cm:
-        ol = df[cm['durumu']].apply(is_olum)
+        ol = df[cm['durumu']].apply(olum_checker)
         # Ölüm yaşı: olum_yas öncelikli, yoksa durum_tarih - kuzu_dogum
         if 'olum_yas' in cm:
             oy = pd.to_numeric(df[cm['olum_yas']], errors='coerce')
@@ -253,14 +263,17 @@ def clean_data(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
         df['_olum_yas'] = np.nan
         df['_yas_gucu'] = np.where(df['_olu'], 0, 1)
 
+    g1 = int(P.get('w_grup1_max', 23))
+    g2 = int(P.get('w_grup2_eq', 24))
+    g3 = int(P.get('w_grup3_max', 26))
     def grup(h):
         if pd.isna(h):
             return np.nan
-        if h <= 23:
+        if h <= g1:
             return 1
-        if h == 24:
+        if h == g2:
             return 2
-        if h <= 26:
+        if h <= g3:
             return 3
         return 4
 
@@ -275,8 +288,10 @@ def clean_data(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
     return df
 
 
-def build_pivot(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
+def build_pivot(df: pd.DataFrame, cm: dict, olum_checker=None) -> pd.DataFrame:
     """Koyun bazında pivot — her koyun için max 3 kuzu (K1/K2/K3)."""
+    if olum_checker is None:
+        olum_checker = is_olum
     df_a = df[~df['_olu']].copy()
     rows = []
     for kn, g in df_a.groupby(cm['koyun_no']):
@@ -300,7 +315,7 @@ def build_pivot(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
                     oy_f = float(oy_num) if pd.notna(oy_num) else None
                 except (TypeError, ValueError):
                     oy_f = None
-                olum = 'Kuzu ölümü' if is_olum(dur_val) and oy_f is not None and oy_f < 90 else ''
+                olum = 'Kuzu ölümü' if olum_checker(dur_val) and oy_f is not None and oy_f < 90 else ''
                 r[f'K{ki} Ölüm'] = olum
                 r[f'K{ki} YasamaGucu'] = ku.get('_yas_gucu', np.nan)
             else:
@@ -611,6 +626,21 @@ with st.sidebar:
         help='"Hazır Grup No" seçersen, eşleştirmede "Grup No" alanını da seçmen gerekir (örn. "tarih sıralı" sütunu).',
     )
 
+    st.subheader('5. Grup Hafta Eşikleri (Aşım/Doğum tarihinden)')
+    st.caption('"Hazır Grup No" seçtiysen bu kısım kullanılmaz.')
+    P['w_grup1_max'] = st.number_input(
+        'Grup 1 üst sınır (hafta ≤)',
+        value=int(P.get('w_grup1_max', 23)), min_value=1, max_value=53, step=1,
+    )
+    P['w_grup2_eq']  = st.number_input(
+        'Grup 2 hafta (=)',
+        value=int(P.get('w_grup2_eq', 24)), min_value=1, max_value=53, step=1,
+    )
+    P['w_grup3_max'] = st.number_input(
+        'Grup 3 üst sınır (hafta ≤)',
+        value=int(P.get('w_grup3_max', 26)), min_value=1, max_value=53, step=1,
+    )
+
     if st.button('Varsayılana sıfırla'):
         st.session_state.params = dict(DEFAULTS)
         st.rerun()
@@ -788,6 +818,39 @@ c3.metric('Zorunlu Eksik', len(eksik_zorunlu))
 if eksik_zorunlu:
     st.error(f"Zorunlu alanlar eksik: {[FIELD_LABELS[k] for k in eksik_zorunlu]}. Yukarıdan eşleştir.")
 
+# Ölüm Değerleri — dinamik seçim (Durumu sütunundaki hangi değerler "kuzu ölümü"?)
+olum_checker = is_olum  # varsayılan
+if 'durumu' in cm:
+    st.subheader('Ölüm Değerleri')
+    unique_durs = sorted(
+        {str(v).strip() for v in df_raw[cm['durumu']].dropna().tolist() if str(v).strip()}
+    )
+    auto_olum = [v for v in unique_durs if is_olum(v)]
+
+    sess_key = f'olum_values_{cm["durumu"]}'
+    if sess_key not in st.session_state:
+        # Otomatik öneri sadece geçerli (unique_durs içinde) olanlar
+        st.session_state[sess_key] = [v for v in auto_olum if v in unique_durs]
+
+    selected_olum = st.multiselect(
+        f'"{cm["durumu"]}" sütununda hangi değerler kuzu ölümünü ifade ediyor?',
+        options=unique_durs,
+        key=sess_key,
+        help='Yıldan yıla "ölüm/öldü/kuzu ölümü" gibi değişen ifadeleri burada elle seç. Otomatik öneri önceden işaretli.',
+    )
+    olum_set = {str(v).lower().strip().rstrip(':').strip() for v in selected_olum}
+
+    def olum_checker(v, _set=olum_set):
+        if pd.isna(v):
+            return False
+        s = str(v).lower().strip().rstrip(':').strip()
+        return s in _set
+
+    if not selected_olum:
+        st.warning('Hiç ölüm değeri seçilmedi — yaşama gücü hesabında "ölüm" yokmuş gibi davranılacak.')
+    else:
+        st.caption(f"✓ Seçili: {len(selected_olum)} değer — {selected_olum}")
+
 # Akıllı uyarı: Grup No eşleşti ama Erken Kızgınlık kaynağı 'grup_no' değil
 if 'grup_no' in cm and st.session_state.params.get('kizginlik_kaynak') != 'grup_no':
     c_info, c_btn = st.columns([4, 1])
@@ -816,7 +879,7 @@ else:
 
 # Veri kalite raporu (Excel'deki "2-Veri Kalite Kontrol" sayfasının karşılığı)
 st.subheader('Veri Kalite Raporu')
-kalite = quality_report(df_raw, cm)
+kalite = quality_report(df_raw, cm, olum_checker=olum_checker)
 if kalite:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric('Toplam Kayıt',     kalite.get('toplam_kayit', '—'))
@@ -867,8 +930,8 @@ if not st.button('Hesapla', type='primary'):
     st.stop()
 
 with st.spinner('Hesaplanıyor...'):
-    df_clean = clean_data(df_raw, cm)
-    piv = build_pivot(df_clean, cm)
+    df_clean = clean_data(df_raw, cm, P=P, olum_checker=olum_checker)
+    piv = build_pivot(df_clean, cm, olum_checker=olum_checker)
     result = calc_index(piv, P)
 
 st.success(f'✓ {len(result)} koyun için fenotipik indeks hesaplandı.')
