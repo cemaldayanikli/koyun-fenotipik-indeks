@@ -552,47 +552,88 @@ with st.sidebar:
 # ──────────────────────────────────────────────────────────────────────────
 st.header('1. Ham Veri Yükle')
 data_file = st.file_uploader(
-    'Excel dosyası seç (.xlsx/.xlsm)',
-    type=['xlsx', 'xlsm'],
+    'Dosya seç (.xlsx / .xlsm / .csv)',
+    type=['xlsx', 'xlsm', 'csv'],
     key='data_file',
-    help="Ham verinin bulunduğu Excel dosyası. Şablon dosyası kullanıyorsan '1-Ham Veri Yapıştır' sayfasını seç.",
+    help="Excel dosyası veya CSV. Şablon dosyası kullanıyorsan '1-Ham Veri Yapıştır' sayfasını seç.",
 )
 
 if data_file is None:
-    st.info('Devam etmek için bir Excel dosyası yükle.')
+    st.info('Devam etmek için bir dosya yükle.')
     st.stop()
 
-# Sayfa seçimi
-try:
-    xl = pd.ExcelFile(data_file, engine='openpyxl')
-except Exception as e:
-    st.error(f'Dosya okunamadı: {e}')
-    st.stop()
+is_csv = data_file.name.lower().endswith('.csv')
 
-default_idx = 0
-for i, name in enumerate(xl.sheet_names):
-    if 'ham veri' in name.lower():
-        default_idx = i
-        break
+df_raw = None
 
-c_sheet, c_header = st.columns([2, 1])
-sheet = c_sheet.selectbox('Sayfa', xl.sheet_names, index=default_idx)
-header_row = c_header.number_input(
-    'Başlık satırı (1-tabanlı)',
-    min_value=1, max_value=10, value=3, step=1,
-    help='Şablon için 3 (başlıklar 3. satırda, veri 4. satırdan başlar).',
-)
+if is_csv:
+    # --- CSV ---
+    c_enc, c_sep, c_hdr = st.columns(3)
+    encoding = c_enc.selectbox(
+        'Kodlama (encoding)',
+        ['utf-8', 'utf-8-sig', 'cp1254', 'latin1'],
+        index=0,
+        help='Türkçe karakterlerde sorun varsa cp1254 dene.',
+    )
+    sep_choice = c_sep.selectbox(
+        'Ayraç (separator)',
+        ['Otomatik', 'Virgül (,)', 'Noktalı virgül (;)', 'Tab', 'Boru (|)'],
+        index=0,
+    )
+    sep_map = {'Otomatik': None, 'Virgül (,)': ',', 'Noktalı virgül (;)': ';', 'Tab': '\t', 'Boru (|)': '|'}
+    sep = sep_map[sep_choice]
+    header_row = c_hdr.number_input(
+        'Başlık satırı (0 = başlık yok)',
+        min_value=0, max_value=20, value=1, step=1,
+        help='Başlıklar hangi satırda? 0 yazarsan başlıklar yok sayılır, sütunlar 0,1,2,... olur ve aşağıdan manuel eşleştirirsin.',
+    )
 
-try:
-    df_raw = pd.read_excel(data_file, sheet_name=sheet, header=header_row - 1, engine='openpyxl')
-    df_raw.columns = [str(c).replace('\n', ' ').strip() for c in df_raw.columns]
-    # Boş satırları at
-    df_raw = df_raw.dropna(how='all').reset_index(drop=True)
-except Exception as e:
-    st.error(f'Sayfa okunamadı: {e}')
-    st.stop()
+    try:
+        data_file.seek(0)
+        df_raw = pd.read_csv(
+            data_file,
+            sep=sep,
+            engine='python' if sep is None else 'c',
+            header=(header_row - 1) if header_row > 0 else None,
+            encoding=encoding,
+        )
+        df_raw.columns = [str(c).replace('\n', ' ').strip() for c in df_raw.columns]
+        df_raw = df_raw.dropna(how='all').reset_index(drop=True)
+    except Exception as e:
+        st.error(f'CSV okunamadı: {e}')
+        st.stop()
 
-st.success(f'✓ {len(df_raw)} satır yüklendi')
+else:
+    # --- Excel ---
+    try:
+        xl = pd.ExcelFile(data_file, engine='openpyxl')
+    except Exception as e:
+        st.error(f'Dosya okunamadı: {e}')
+        st.stop()
+
+    default_idx = 0
+    for i, name in enumerate(xl.sheet_names):
+        if 'ham veri' in name.lower():
+            default_idx = i
+            break
+
+    c_sheet, c_header = st.columns([2, 1])
+    sheet = c_sheet.selectbox('Sayfa', xl.sheet_names, index=default_idx)
+    header_row = c_header.number_input(
+        'Başlık satırı (1-tabanlı)',
+        min_value=1, max_value=10, value=3, step=1,
+        help='Şablon için 3 (başlıklar 3. satırda, veri 4. satırdan başlar).',
+    )
+
+    try:
+        df_raw = pd.read_excel(data_file, sheet_name=sheet, header=header_row - 1, engine='openpyxl')
+        df_raw.columns = [str(c).replace('\n', ' ').strip() for c in df_raw.columns]
+        df_raw = df_raw.dropna(how='all').reset_index(drop=True)
+    except Exception as e:
+        st.error(f'Sayfa okunamadı: {e}')
+        st.stop()
+
+st.success(f'✓ {len(df_raw)} satır, {len(df_raw.columns)} sütun yüklendi')
 
 with st.expander('Ham veri önizleme (ilk 20 satır)', expanded=False):
     st.dataframe(df_raw.head(20), use_container_width=True)
@@ -602,21 +643,76 @@ with st.expander('Ham veri önizleme (ilk 20 satır)', expanded=False):
 # ──────────────────────────────────────────────────────────────────────────
 st.header('2. Veri Kalite Kontrol')
 
-cm = find_columns(df_raw)
+# Otomatik tanıma — varsayılan eşleşmeler
+cm_auto = find_columns(df_raw)
 
-# Sütun eşleştirme
-with st.expander('Sütun Eşleştirme', expanded=True):
-    rows = []
-    for key in REQUIRED_COLUMNS:
-        rows.append({
-            'Alan': key,
-            'Eşleşen Sütun': cm.get(key, ''),
-            'Durum': '✓' if key in cm else '✗ EKSİK',
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    eksik = [k for k in REQUIRED_COLUMNS if k not in cm]
-    if eksik:
-        st.warning(f'Eksik alanlar: {eksik}. Bu alanlara bağlı hesaplamalar atlanır.')
+# Alan etiketleri ve zorunlu olanlar
+FIELD_LABELS = {
+    'koyun_no':    'Koyun No ★',
+    'koc_no':      'Koç No',
+    'koyun_yas':   'Koyun Yaş',
+    'dogum_tipi':  'Doğum Tipi ★',
+    'cinsiyet':    'Cinsiyet (E/D/ÖLÜ)',
+    'ulusal_no':   'Ulusal No (kuzu)',
+    'dogum_ag':    'Doğum Ağırlığı',
+    'canli_ag':    'Canlı Ağırlık (son ölçüm)',
+    'kuzu_dogum':  'Kuzu Doğum Tarihi',
+    'asim_tarih':  'Koç Aşım Tarihi',
+    'olcum_tarih': 'Ölçüm/Tartım Tarihi',
+    'durumu':      'Durumu (ölüm/yaşıyor)',
+    'olum_yas':    'Ölüm Yaşı (gün)',
+    'gebelik':     'Gebelik Süresi',
+}
+
+# Manuel sütun eşleştirme
+st.subheader('Sütun Eşleştirme')
+st.caption('Her alan için doğru sütunu seç. Otomatik tanınanlar önceden seçili — yanlışsa veya boşsa düzelt. ★ = zorunlu')
+
+NONE_OPT = '(Yok)'
+col_options = [NONE_OPT] + list(df_raw.columns)
+
+# Session state ile seçimleri sakla (rerun'da kaybolmasın)
+if 'col_mapping' not in st.session_state or st.session_state.get('_last_cols') != tuple(df_raw.columns):
+    st.session_state.col_mapping = {k: cm_auto.get(k, NONE_OPT) for k in REQUIRED_COLUMNS}
+    st.session_state._last_cols = tuple(df_raw.columns)
+
+with st.expander('Eşleştirmeyi düzenle', expanded=True):
+    cA, cB = st.columns(2)
+    fields = list(REQUIRED_COLUMNS.keys())
+    half = (len(fields) + 1) // 2
+    for i, field in enumerate(fields):
+        target = cA if i < half else cB
+        with target:
+            current = st.session_state.col_mapping.get(field, NONE_OPT)
+            if current not in col_options:
+                current = NONE_OPT
+            sel = st.selectbox(
+                FIELD_LABELS.get(field, field),
+                col_options,
+                index=col_options.index(current),
+                key=f'col_{field}',
+            )
+            st.session_state.col_mapping[field] = sel
+
+    if st.button('Otomatik tanıyı tekrar uygula'):
+        for k in REQUIRED_COLUMNS:
+            st.session_state.col_mapping[k] = cm_auto.get(k, NONE_OPT)
+            st.session_state[f'col_{k}'] = st.session_state.col_mapping[k]
+        st.rerun()
+
+# Son cm — kullanıcı seçimlerinden
+cm = {k: v for k, v in st.session_state.col_mapping.items() if v and v != NONE_OPT}
+
+# Eşleşme özeti
+eslesen = len(cm)
+eksik_zorunlu = [k for k in ('koyun_no', 'dogum_tipi') if k not in cm]
+c1, c2, c3 = st.columns(3)
+c1.metric('Eşleşen Alan', f'{eslesen}/{len(REQUIRED_COLUMNS)}')
+c2.metric('Toplam Sütun', len(df_raw.columns))
+c3.metric('Zorunlu Eksik', len(eksik_zorunlu))
+
+if eksik_zorunlu:
+    st.error(f"Zorunlu alanlar eksik: {[FIELD_LABELS[k] for k in eksik_zorunlu]}. Yukarıdan eşleştir.")
 
 # Uyarılar
 warnings = validate_data(df_raw, cm)
