@@ -459,7 +459,8 @@ def calc_index(piv: pd.DataFrame, P: dict) -> pd.DataFrame:
         'Aşım Grubu', 'Doğum Grubu', 'Grup No', 'Kuzu Sayısı', 'Ölüm Sayısı',
         'Toplam 90CA', 'Toplam 90CA Kats.', 'OrtCAA', 'OrtCAA Kats.',
         'DKV Puan', '90KV Puan', 'Toplam 90CA Puan', 'OrtCAA Puan',
-        'Kriter Toplam', 'Erken Kızgınlık Puan', 'Embriyonik Kayıp Puan',
+        'Kriter Toplam', 'Erken Kızgınlık Puan', 'Erken Kızgınlık Kaynak',
+        'Embriyonik Kayıp Puan',
         'Fenotipik İndeks',
     ]
     return df[cols]
@@ -786,6 +787,18 @@ c3.metric('Zorunlu Eksik', len(eksik_zorunlu))
 
 if eksik_zorunlu:
     st.error(f"Zorunlu alanlar eksik: {[FIELD_LABELS[k] for k in eksik_zorunlu]}. Yukarıdan eşleştir.")
+
+# Akıllı uyarı: Grup No eşleşti ama Erken Kızgınlık kaynağı 'grup_no' değil
+if 'grup_no' in cm and st.session_state.params.get('kizginlik_kaynak') != 'grup_no':
+    c_info, c_btn = st.columns([4, 1])
+    c_info.info(
+        f"💡 **'Grup No'** alanı `{cm['grup_no']}` sütunuyla eşleşti. "
+        f"Şu an Erken Kızgınlık kaynağı **{kaynak_labels.get(st.session_state.params.get('kizginlik_kaynak'), '?')}** — "
+        f"hazır grup numaralarını kullanmak için soldaki kaynağı değiştir veya yandaki butona bas."
+    )
+    if c_btn.button('Grup No\'yu kullan', key='use_grup_no'):
+        st.session_state.params['kizginlik_kaynak'] = 'grup_no'
+        st.rerun()
 
 # Uyarılar
 warnings = validate_data(df_raw, cm)
