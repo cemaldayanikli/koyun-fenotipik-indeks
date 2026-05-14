@@ -77,8 +77,8 @@ DEFAULTS = {
     'caa_zero':     0.112,
     'caa_low':      0.311,
     'caa_mid':      0.35,
-    # Erken Kızgınlık puanı için grup kaynağı: 'asim', 'dogum' veya 'grup_no'
-    'kizginlik_kaynak': 'asim',
+    # Erken Kızgınlık puanı için grup kaynağı: 'auto_dogum', 'grup_no', 'asim', 'dogum'
+    'kizginlik_kaynak': 'auto_dogum',
     # Aşım/Doğum tarihinden grup hesaplama eşikleri (ISO hafta no)
     'w_grup1_max': 23,
     'w_grup2_eq':  24,
@@ -288,6 +288,29 @@ def clean_data(df: pd.DataFrame, cm: dict, P: dict | None = None, olum_checker=N
     return df
 
 
+def add_auto_grup(piv: pd.DataFrame, n_groups: int = 3) -> pd.DataFrame:
+    """Koyunları İlk Doğum Tarihine göre n_groups eşit parçaya böl (tertile).
+    En erken doğuranlar → Grup 1, geç doğuranlar → Grup n_groups.
+    Tarih yoksa veya geçersizse → Grup (n_groups + 1) = "doğum yok" / 4.
+    """
+    if 'İlk Doğum Tarihi' not in piv.columns:
+        piv['Otomatik Grup'] = pd.Series([pd.NA] * len(piv), dtype='Int64')
+        return piv
+    tarihler = pd.to_datetime(piv['İlk Doğum Tarihi'], errors='coerce')
+    valid = tarihler.notna()
+    out = pd.Series([n_groups + 1] * len(piv), index=piv.index, dtype='Int64')
+    if valid.sum() >= n_groups:
+        # rank ile aynı tarihleri sıralamada stabil tut, sonra eşit parçalara böl
+        ranks = tarihler[valid].rank(method='first')
+        cuts = pd.qcut(ranks, q=n_groups, labels=list(range(1, n_groups + 1)))
+        out.loc[valid] = cuts.astype(int).astype('Int64')
+    elif valid.sum() > 0:
+        # n_groups'tan az koyun varsa hepsini Grup 1 yap
+        out.loc[valid] = 1
+    piv['Otomatik Grup'] = out
+    return piv
+
+
 def build_pivot(df: pd.DataFrame, cm: dict, olum_checker=None) -> pd.DataFrame:
     """Koyun bazında pivot — her koyun için max 3 kuzu (K1/K2/K3)."""
     if olum_checker is None:
@@ -327,8 +350,18 @@ def build_pivot(df: pd.DataFrame, cm: dict, olum_checker=None) -> pd.DataFrame:
         r['Aşım Grubu']  = g['_asim_grup'].iloc[0]  if '_asim_grup'  in g.columns else np.nan
         r['Doğum Grubu'] = g['_dogum_grup'].iloc[0] if '_dogum_grup' in g.columns else np.nan
         r['Grup No']     = g['_grup_no'].iloc[0]    if '_grup_no'    in g.columns else np.nan
+        # İlk doğum tarihini (en eski) bul — otomatik grup için
+        if 'kuzu_dogum' in cm:
+            try:
+                r['İlk Doğum Tarihi'] = pd.to_datetime(g[cm['kuzu_dogum']], errors='coerce').min()
+            except Exception:
+                r['İlk Doğum Tarihi'] = pd.NaT
+        else:
+            r['İlk Doğum Tarihi'] = pd.NaT
         rows.append(r)
-    return pd.DataFrame(rows)
+    piv = pd.DataFrame(rows)
+    piv = add_auto_grup(piv, n_groups=3)
+    return piv
 
 
 def calc_index(piv: pd.DataFrame, P: dict) -> pd.DataFrame:
@@ -446,11 +479,16 @@ def calc_index(piv: pd.DataFrame, P: dict) -> pd.DataFrame:
             return P['w_kizginlik'] * 0.3
         return 0.0
     kaynak = P.get('kizginlik_kaynak', 'asim')
-    grup_kol_map = {'asim': 'Aşım Grubu', 'dogum': 'Doğum Grubu', 'grup_no': 'Grup No'}
+    grup_kol_map = {
+        'asim': 'Aşım Grubu',
+        'dogum': 'Doğum Grubu',
+        'grup_no': 'Grup No',
+        'auto_dogum': 'Otomatik Grup',
+    }
     grup_kol = grup_kol_map.get(kaynak, 'Aşım Grubu')
     # Seçilen kolon yok veya tamamen NaN ise fallback
     if grup_kol not in df.columns or df[grup_kol].notna().sum() == 0:
-        for alt in ('Grup No', 'Aşım Grubu', 'Doğum Grubu'):
+        for alt in ('Otomatik Grup', 'Grup No', 'Aşım Grubu', 'Doğum Grubu'):
             if alt in df.columns and df[alt].notna().sum() > 0:
                 grup_kol = alt
                 break
@@ -471,7 +509,9 @@ def calc_index(piv: pd.DataFrame, P: dict) -> pd.DataFrame:
         'K1 Ulusal', 'K1 DOGAG', 'K1 CA90g', 'K1 CAA', 'K1 Ölüm', 'K1 YasamaGucu',
         'K2 Ulusal', 'K2 DOGAG', 'K2 CA90g', 'K2 CAA', 'K2 Ölüm', 'K2 YasamaGucu',
         'K3 Ulusal', 'K3 DOGAG', 'K3 CA90g', 'K3 CAA', 'K3 Ölüm', 'K3 YasamaGucu',
-        'Aşım Grubu', 'Doğum Grubu', 'Grup No', 'Kuzu Sayısı', 'Ölüm Sayısı',
+        'İlk Doğum Tarihi',
+        'Aşım Grubu', 'Doğum Grubu', 'Grup No', 'Otomatik Grup',
+        'Kuzu Sayısı', 'Ölüm Sayısı',
         'Toplam 90CA', 'Toplam 90CA Kats.', 'OrtCAA', 'OrtCAA Kats.',
         'DKV Puan', '90KV Puan', 'Toplam 90CA Puan', 'OrtCAA Puan',
         'Kriter Toplam', 'Erken Kızgınlık Puan', 'Erken Kızgınlık Kaynak',
@@ -609,15 +649,16 @@ with st.sidebar:
     P['caa_mid']  = st.number_input('Üst eşik (1.0 üstü)',  value=float(P['caa_mid']),  step=0.001, format='%.3f')
 
     st.subheader('4. Erken Kızgınlık Kaynağı')
-    kaynak_opts = ['asim', 'dogum', 'grup_no']
+    kaynak_opts = ['auto_dogum', 'grup_no', 'asim', 'dogum']
     kaynak_labels = {
-        'asim': 'Koç Aşım Tarihi (haftadan grup)',
-        'dogum': 'Kuzu Doğum Tarihi (haftadan grup)',
-        'grup_no': 'Hazır Grup No sütunu (1/2/3)',
+        'auto_dogum': 'Otomatik 3\'lü Bölme (doğum sırasından — önerilen)',
+        'grup_no':    'Hazır Grup No sütunu (1/2/3)',
+        'asim':       'Koç Aşım Tarihi (ISO haftadan)',
+        'dogum':      'Kuzu Doğum Tarihi (ISO haftadan)',
     }
-    cur = P.get('kizginlik_kaynak', 'asim')
+    cur = P.get('kizginlik_kaynak', 'auto_dogum')
     if cur not in kaynak_opts:
-        cur = 'asim'
+        cur = 'auto_dogum'
     P['kizginlik_kaynak'] = st.radio(
         'Erken Kızgınlık puanı hangi gruptan hesaplansın?',
         options=kaynak_opts,
