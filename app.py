@@ -619,10 +619,14 @@ else:
 
     c_sheet, c_header = st.columns([2, 1])
     sheet = c_sheet.selectbox('Sayfa', xl.sheet_names, index=default_idx)
+    # Şablon sayfası seçildiyse varsayılan 3, normal sayfa için 1
+    is_template = 'ham veri yapıştır' in sheet.lower()
     header_row = c_header.number_input(
         'Başlık satırı (1-tabanlı)',
-        min_value=1, max_value=10, value=3, step=1,
-        help='Şablon için 3 (başlıklar 3. satırda, veri 4. satırdan başlar).',
+        min_value=1, max_value=10,
+        value=3 if is_template else 1,
+        step=1,
+        help='Normal Excel: 1. "1-Ham Veri Yapıştır" şablonu: 3.',
     )
 
     try:
