@@ -37,6 +37,7 @@ REQUIRED_COLUMNS = {
     'durum_tarih': ['durum tarih'],
     'olum_yas':    ['kuzunun öldüğü yaş', 'öldüğü yaş', 'ölüm yaşı'],
     'gebelik':     ['gebelik süresi'],
+    'grup_no':     ['tarih sıralı', 'grup no', 'kızgınlık grubu', 'aşım grubu', 'doğum grubu'],
 }
 
 # Durum sütununda ölüm anlamına gelen değerler (tam eşitlik, küçük harf + sade)
@@ -269,6 +270,8 @@ def clean_data(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
     if 'kuzu_dogum' in cm:
         hafta_d = pd.to_datetime(df[cm['kuzu_dogum']], errors='coerce').dt.isocalendar().week.astype('Int64')
         df['_dogum_grup'] = hafta_d.apply(grup)
+    if 'grup_no' in cm:
+        df['_grup_no'] = pd.to_numeric(df[cm['grup_no']], errors='coerce')
     return df
 
 
@@ -308,6 +311,7 @@ def build_pivot(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
                 r[f'K{ki} YasamaGucu'] = np.nan
         r['Aşım Grubu']  = g['_asim_grup'].iloc[0]  if '_asim_grup'  in g.columns else np.nan
         r['Doğum Grubu'] = g['_dogum_grup'].iloc[0] if '_dogum_grup' in g.columns else np.nan
+        r['Grup No']     = g['_grup_no'].iloc[0]    if '_grup_no'    in g.columns else np.nan
         rows.append(r)
     return pd.DataFrame(rows)
 
@@ -426,11 +430,17 @@ def calc_index(piv: pd.DataFrame, P: dict) -> pd.DataFrame:
         if g == 3:
             return P['w_kizginlik'] * 0.3
         return 0.0
-    grup_kol = 'Doğum Grubu' if P.get('kizginlik_kaynak') == 'dogum' else 'Aşım Grubu'
-    if grup_kol not in df.columns:
-        # Fallback — eksikse diğerine düş
-        grup_kol = 'Aşım Grubu' if 'Aşım Grubu' in df.columns else 'Doğum Grubu'
+    kaynak = P.get('kizginlik_kaynak', 'asim')
+    grup_kol_map = {'asim': 'Aşım Grubu', 'dogum': 'Doğum Grubu', 'grup_no': 'Grup No'}
+    grup_kol = grup_kol_map.get(kaynak, 'Aşım Grubu')
+    # Seçilen kolon yok veya tamamen NaN ise fallback
+    if grup_kol not in df.columns or df[grup_kol].notna().sum() == 0:
+        for alt in ('Grup No', 'Aşım Grubu', 'Doğum Grubu'):
+            if alt in df.columns and df[alt].notna().sum() > 0:
+                grup_kol = alt
+                break
     df['Erken Kızgınlık Puan'] = df[grup_kol].apply(kizg) if grup_kol in df.columns else 0.0
+    df['Erken Kızgınlık Kaynak'] = grup_kol
 
     # AF — Embriyonik Kayıp puanı (varsayılan: Doğum var=1.0)
     df['Embriyonik Kayıp Puan'] = P['w_embriyo'] * 1.0
@@ -446,7 +456,7 @@ def calc_index(piv: pd.DataFrame, P: dict) -> pd.DataFrame:
         'K1 Ulusal', 'K1 DOGAG', 'K1 CA90g', 'K1 CAA', 'K1 Ölüm', 'K1 YasamaGucu',
         'K2 Ulusal', 'K2 DOGAG', 'K2 CA90g', 'K2 CAA', 'K2 Ölüm', 'K2 YasamaGucu',
         'K3 Ulusal', 'K3 DOGAG', 'K3 CA90g', 'K3 CAA', 'K3 Ölüm', 'K3 YasamaGucu',
-        'Aşım Grubu', 'Doğum Grubu', 'Kuzu Sayısı', 'Ölüm Sayısı',
+        'Aşım Grubu', 'Doğum Grubu', 'Grup No', 'Kuzu Sayısı', 'Ölüm Sayısı',
         'Toplam 90CA', 'Toplam 90CA Kats.', 'OrtCAA', 'OrtCAA Kats.',
         'DKV Puan', '90KV Puan', 'Toplam 90CA Puan', 'OrtCAA Puan',
         'Kriter Toplam', 'Erken Kızgınlık Puan', 'Embriyonik Kayıp Puan',
@@ -583,12 +593,21 @@ with st.sidebar:
     P['caa_mid']  = st.number_input('Üst eşik (1.0 üstü)',  value=float(P['caa_mid']),  step=0.001, format='%.3f')
 
     st.subheader('4. Erken Kızgınlık Kaynağı')
+    kaynak_opts = ['asim', 'dogum', 'grup_no']
+    kaynak_labels = {
+        'asim': 'Koç Aşım Tarihi (haftadan grup)',
+        'dogum': 'Kuzu Doğum Tarihi (haftadan grup)',
+        'grup_no': 'Hazır Grup No sütunu (1/2/3)',
+    }
+    cur = P.get('kizginlik_kaynak', 'asim')
+    if cur not in kaynak_opts:
+        cur = 'asim'
     P['kizginlik_kaynak'] = st.radio(
-        'Hangi tarihten grup hesaplansın?',
-        options=['asim', 'dogum'],
-        index=0 if P.get('kizginlik_kaynak', 'asim') == 'asim' else 1,
-        format_func=lambda x: 'Koç Aşım Tarihi' if x == 'asim' else 'Kuzu Doğum Tarihi',
-        help='Tabloda her iki grup da görünür; bu seçim Erken Kızgınlık puanını hangisinden hesaplayacağını belirler.',
+        'Erken Kızgınlık puanı hangi gruptan hesaplansın?',
+        options=kaynak_opts,
+        index=kaynak_opts.index(cur),
+        format_func=lambda x: kaynak_labels[x],
+        help='"Hazır Grup No" seçersen, eşleştirmede "Grup No" alanını da seçmen gerekir (örn. "tarih sıralı" sütunu).',
     )
 
     if st.button('Varsayılana sıfırla'):
@@ -715,6 +734,7 @@ FIELD_LABELS = {
     'durum_tarih': 'Durum Tarihi (ölüm tarihi)',
     'olum_yas':    'Ölüm Yaşı (gün) — boşsa durum tarihinden hesaplanır',
     'gebelik':     'Gebelik Süresi',
+    'grup_no':     'Grup No (1/2/3) — "tarih sıralı" gibi hazır grup sütunu',
 }
 
 # Manuel sütun eşleştirme
