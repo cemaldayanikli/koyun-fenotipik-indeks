@@ -32,11 +32,33 @@ REQUIRED_COLUMNS = {
     'canli_ag':    ['canlı ağırlık'],
     'kuzu_dogum':  ['kuzu doğum tarih'],
     'asim_tarih':  ['koç aşım tarihi'],
-    'olcum_tarih': ['ölçüm ve tartım tarihi'],
-    'durumu':      ['durumu:'],
-    'olum_yas':    ['kuzunun öldüğü yaş'],
+    'olcum_tarih': ['ölçüm ve tartım tarihi', 'tartım tarihi', 'sütten kesim tartım'],
+    'durumu':      ['durumu:', 'durumu'],
+    'durum_tarih': ['durum tarih'],
+    'olum_yas':    ['kuzunun öldüğü yaş', 'öldüğü yaş', 'ölüm yaşı'],
     'gebelik':     ['gebelik süresi'],
 }
+
+# Durum sütununda ölüm anlamına gelen değerler (tam eşitlik, küçük harf + sade)
+OLUM_KEYWORDS = {
+    'ölüm', 'ölü', 'öldü', 'ölmüş', 'oldu',
+    'olum', 'olu', 'olmus', 'olmuş',
+}
+
+
+def is_olum(v) -> bool:
+    """Durum sütununda ölüm anlamı taşıyan değerleri yakala (esnek)."""
+    if pd.isna(v):
+        return False
+    s = str(v).lower().strip().rstrip(':').strip()
+    if not s:
+        return False
+    if s in OLUM_KEYWORDS:
+        return True
+    # 'öl' ile başlayan kısa kelimeler (ölüm, ölü, öldü, ölmüş vb.)
+    if s.startswith('öl') and len(s) <= 8:
+        return True
+    return False
 
 # AYARLAR sayfasından okunan varsayılan değerler (Is_Akisi_Sablonu_Final.xlsm)
 DEFAULTS = {
@@ -156,10 +178,17 @@ def quality_report(df: pd.DataFrame, cm: dict) -> dict:
             r[label] = int(df[cm[k]].isna().sum())
     # Ölüm istatistikleri
     if 'durumu' in cm:
-        ol = df[cm['durumu']].astype(str).str.lower().str.strip() == 'ölüm'
+        ol = df[cm['durumu']].apply(is_olum)
         r['toplam_olum'] = int(ol.sum())
+        # Ölüm yaşı: olum_yas varsa onu kullan, yoksa durum_tarih - kuzu_dogum
+        oy = None
         if 'olum_yas' in cm:
             oy = pd.to_numeric(df.loc[ol, cm['olum_yas']], errors='coerce')
+        elif 'durum_tarih' in cm and 'kuzu_dogum' in cm:
+            d_dur = pd.to_datetime(df.loc[ol, cm['durum_tarih']], errors='coerce')
+            d_dog = pd.to_datetime(df.loc[ol, cm['kuzu_dogum']], errors='coerce')
+            oy = (d_dur - d_dog).dt.days
+        if oy is not None and len(oy) > 0:
             r['ort_olum_yas'] = float(oy.mean()) if oy.notna().any() else None
             r['olum_90_oncesi'] = int((oy < 90).sum())
             r['olum_90_sonrasi'] = int((oy >= 90).sum())
@@ -203,14 +232,24 @@ def clean_data(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
         df['_90g'] = np.where((y > 0) & c2.notna() & d.notna(),
                               d + ((c2 - d) / y) * 90, np.nan)
 
-    if 'durumu' in cm and 'olum_yas' in cm:
-        ol = df[cm['durumu']].astype(str).str.lower().str.strip() == 'ölüm'
-        oy = pd.to_numeric(df[cm['olum_yas']], errors='coerce')
+    if 'durumu' in cm:
+        ol = df[cm['durumu']].apply(is_olum)
+        # Ölüm yaşı: olum_yas öncelikli, yoksa durum_tarih - kuzu_dogum
+        if 'olum_yas' in cm:
+            oy = pd.to_numeric(df[cm['olum_yas']], errors='coerce')
+        elif 'durum_tarih' in cm and 'kuzu_dogum' in cm:
+            d_dur = pd.to_datetime(df[cm['durum_tarih']], errors='coerce')
+            d_dog = pd.to_datetime(df[cm['kuzu_dogum']], errors='coerce')
+            oy = (d_dur - d_dog).dt.days
+        else:
+            oy = pd.Series([np.nan] * len(df))
+        df['_olum_yas'] = oy
         df['_yas_gucu'] = np.where(df['_olu'], 0,
                           np.where(ol & (oy < 90), 0,
                           np.where(ol & (oy >= 90), 1,
                           np.where(~ol, 1, np.nan))))
     else:
+        df['_olum_yas'] = np.nan
         df['_yas_gucu'] = np.where(df['_olu'], 0, 1)
 
     def grup(h):
@@ -252,12 +291,13 @@ def build_pivot(df: pd.DataFrame, cm: dict) -> pd.DataFrame:
                 r[f'K{ki} Ulusal'] = ku.get(cm.get('ulusal_no', ''), '')
                 r[f'K{ki} DOGAG'] = ku.get(cm.get('dogum_ag', ''), np.nan)
                 r[f'K{ki} CA90g'] = ku.get('_90g', np.nan)
-                dur = str(ku.get(cm.get('durumu', ''), '')).lower().strip()
-                oy_v = ku.get(cm.get('olum_yas', ''), '')
+                dur_val = ku.get(cm.get('durumu', ''), '')
+                oy_num = ku.get('_olum_yas', np.nan)
                 try:
-                    olum = 'Kuzu ölümü' if dur == 'ölüm' and pd.notna(oy_v) and float(oy_v) < 90 else ''
+                    oy_f = float(oy_num) if pd.notna(oy_num) else None
                 except (TypeError, ValueError):
-                    olum = ''
+                    oy_f = None
+                olum = 'Kuzu ölümü' if is_olum(dur_val) and oy_f is not None and oy_f < 90 else ''
                 r[f'K{ki} Ölüm'] = olum
                 r[f'K{ki} YasamaGucu'] = ku.get('_yas_gucu', np.nan)
             else:
@@ -664,7 +704,8 @@ FIELD_LABELS = {
     'asim_tarih':  'Koç Aşım Tarihi',
     'olcum_tarih': 'Ölçüm/Tartım Tarihi',
     'durumu':      'Durumu (ölüm/yaşıyor)',
-    'olum_yas':    'Ölüm Yaşı (gün)',
+    'durum_tarih': 'Durum Tarihi (ölüm tarihi)',
+    'olum_yas':    'Ölüm Yaşı (gün) — boşsa durum tarihinden hesaplanır',
     'gebelik':     'Gebelik Süresi',
 }
 
