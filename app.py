@@ -188,11 +188,13 @@ def quality_report(df: pd.DataFrame, cm: dict, olum_checker=None) -> dict:
     if 'durumu' in cm:
         ol = df[cm['durumu']].apply(olum_checker)
         r['toplam_olum'] = int(ol.sum())
-        # Ölüm yaşı: olum_yas varsa onu kullan, yoksa durum_tarih - kuzu_dogum
+        # Ölüm yaşı: olum_yas varsa ve dolu ise onu kullan; aksi halde durum_tarih - kuzu_dogum
         oy = None
         if 'olum_yas' in cm:
-            oy = pd.to_numeric(df.loc[ol, cm['olum_yas']], errors='coerce')
-        elif 'durum_tarih' in cm and 'kuzu_dogum' in cm:
+            candidate = pd.to_numeric(df.loc[ol, cm['olum_yas']], errors='coerce')
+            if candidate.notna().any():
+                oy = candidate
+        if oy is None and 'durum_tarih' in cm and 'kuzu_dogum' in cm:
             d_dur = pd.to_datetime(df.loc[ol, cm['durum_tarih']], errors='coerce')
             d_dog = pd.to_datetime(df.loc[ol, cm['kuzu_dogum']], errors='coerce')
             oy = (d_dur - d_dog).dt.days
@@ -246,14 +248,17 @@ def clean_data(df: pd.DataFrame, cm: dict, P: dict | None = None, olum_checker=N
 
     if 'durumu' in cm:
         ol = df[cm['durumu']].apply(olum_checker)
-        # Ölüm yaşı: olum_yas öncelikli, yoksa durum_tarih - kuzu_dogum
+        # Ölüm yaşı: olum_yas dolu ise onu kullan; aksi halde durum_tarih - kuzu_dogum
+        oy = None
         if 'olum_yas' in cm:
-            oy = pd.to_numeric(df[cm['olum_yas']], errors='coerce')
-        elif 'durum_tarih' in cm and 'kuzu_dogum' in cm:
+            candidate = pd.to_numeric(df[cm['olum_yas']], errors='coerce')
+            if candidate.notna().any():
+                oy = candidate
+        if oy is None and 'durum_tarih' in cm and 'kuzu_dogum' in cm:
             d_dur = pd.to_datetime(df[cm['durum_tarih']], errors='coerce')
             d_dog = pd.to_datetime(df[cm['kuzu_dogum']], errors='coerce')
             oy = (d_dur - d_dog).dt.days
-        else:
+        if oy is None:
             oy = pd.Series([np.nan] * len(df))
         df['_olum_yas'] = oy
         df['_yas_gucu'] = np.where(df['_olu'], 0,
