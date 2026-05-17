@@ -9,6 +9,7 @@ Ham veri yükle → Veri kalite kontrol → Fenotipik indeks hesapla → Excel i
 
 import io
 import re
+import unicodedata
 from datetime import datetime
 
 import numpy as np
@@ -46,6 +47,42 @@ OLUM_KEYWORDS = {
     'ölüm', 'ölü', 'öldü', 'ölmüş', 'oldu',
     'olum', 'olu', 'olmus', 'olmuş',
 }
+
+
+def _strip_accents(s: str) -> str:
+    """Türkçe karakterleri ASCII'ye sadeleştir (i̇→i, ü→u, ç→c, ş→s, ğ→g, ö→o, ı→i)."""
+    s = ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
+    return s
+
+
+# Doğum tipi normalize tablosu
+DOGUM_TIPI_MAP = {
+    # T - Tekiz
+    't': 'T', 'tek': 'T', 'tekiz': 'T', 'tekli': 'T', 'single': 'T',
+    # İ - İkiz
+    'i': 'İ', 'ikiz': 'İ', 'ikili': 'İ', 'twin': 'İ',
+    # Ü - Üçüz
+    'u': 'Ü', 'ucuz': 'Ü', 'uc': 'Ü', 'uclu': 'Ü', 'triplet': 'Ü',
+    # 4 - Dördüz
+    '4': '4', 'dort': '4', 'dortuz': '4', 'dortlu': '4', 'quad': '4', 'quadruplet': '4',
+}
+
+
+def normalize_dogum_tipi(v):
+    """Doğum tipini standart T/İ/Ü/4 formatına çevir (tek/ikiz/üçüz/dört vb. yakalanır)."""
+    if pd.isna(v):
+        return ''
+    s = str(v).lower().strip()
+    if not s:
+        return ''
+    s = _strip_accents(s)
+    if s in DOGUM_TIPI_MAP:
+        return DOGUM_TIPI_MAP[s]
+    # Prefix match
+    for prefix, code in (('tek', 'T'), ('iki', 'İ'), ('uc', 'Ü'), ('dor', '4')):
+        if s.startswith(prefix):
+            return code
+    return str(v).strip()  # bilinmeyen → raw
 
 
 def is_olum(v) -> bool:
@@ -92,16 +129,18 @@ DEFAULTS = {
 # ═══════════════════════════════════════════════════════════════════════════
 
 def find_columns(df: pd.DataFrame) -> dict:
-    """Sütun isimlerini akıllı eşleştirme ile bulur."""
+    """Sütun isimlerini akıllı eşleştirme ile bulur. Çift boşluk/newline tolere edilir."""
     cm = {}
     used = set()
     for key, patterns in REQUIRED_COLUMNS.items():
         for col in df.columns:
             if col in used:
                 continue
-            col_clean = str(col).lower().replace('\n', ' ').strip()
+            # Boşlukları normalize et (\n, çift boşluk → tek boşluk)
+            col_clean = re.sub(r'\s+', ' ', str(col).lower().strip())
             for pat in patterns:
-                if pat in col_clean and key not in cm:
+                pat_clean = re.sub(r'\s+', ' ', pat.lower().strip())
+                if pat_clean in col_clean and key not in cm:
                     if key == 'canli_ag' and ('1.' in col_clean or 'artış' in col_clean):
                         continue
                     if key == 'koyun_no' and ('koç' in col_clean or 'koc' in col_clean):
@@ -742,7 +781,7 @@ if is_csv:
             header=(header_row - 1) if header_row > 0 else None,
             encoding=encoding,
         )
-        df_raw.columns = [str(c).replace('\n', ' ').strip() for c in df_raw.columns]
+        df_raw.columns = [re.sub(r'\s+', ' ', str(c).replace('\n', ' ').strip()) for c in df_raw.columns]
         df_raw = df_raw.dropna(how='all').reset_index(drop=True)
     except Exception as e:
         st.error(f'CSV okunamadı: {e}')
@@ -776,7 +815,7 @@ else:
 
     try:
         df_raw = pd.read_excel(data_file, sheet_name=sheet, header=header_row - 1, engine='openpyxl')
-        df_raw.columns = [str(c).replace('\n', ' ').strip() for c in df_raw.columns]
+        df_raw.columns = [re.sub(r'\s+', ' ', str(c).replace('\n', ' ').strip()) for c in df_raw.columns]
         df_raw = df_raw.dropna(how='all').reset_index(drop=True)
     except Exception as e:
         st.error(f'Sayfa okunamadı: {e}')
@@ -854,6 +893,11 @@ with st.expander('Eşleştirmeyi düzenle', expanded=True):
 
 # Son cm — kullanıcı seçimlerinden
 cm = {k: v for k, v in st.session_state.col_mapping.items() if v and v != NONE_OPT}
+
+# Doğum Tipi normalize — "tek/ikiz/üçüz/dört" gibi açık ifadeleri T/İ/Ü/4'e çevir
+if 'dogum_tipi' in cm:
+    dt_col = cm['dogum_tipi']
+    df_raw[dt_col] = df_raw[dt_col].apply(normalize_dogum_tipi)
 
 # Eşleşme özeti
 eslesen = len(cm)
