@@ -30,10 +30,13 @@ Write-Host "MESAJ : $Mesaj"
 
 Basla "Sozdizimi denetimi (py_compile)"
 $py = if (Test-Path ".\venv\Scripts\python.exe") { ".\venv\Scripts\python.exe" } else { "python" }
-$kaynaklar = Get-ChildItem -Filter *.py -Recurse |
-             Where-Object { $_.FullName -notmatch '\\venv\\|\\\.venv\\|\\__pycache__\\' } |
-             Select-Object -ExpandProperty FullName
-if ($kaynaklar) {
+# @(...) SART: tek dosya donerse Select-Object bir DIZI degil tek bir METIN verir;
+# "@kaynaklar" ile acildiginda metin harf harf parcalanip py_compile'a
+# "C", ":", "\", ... diye gider ("[Errno 2] No such file or directory: 'C'").
+$kaynaklar = @(Get-ChildItem -Filter *.py -Recurse |
+               Where-Object { $_.FullName -notmatch '\\venv\\|\\\.venv\\|\\__pycache__\\' } |
+               Select-Object -ExpandProperty FullName)
+if ($kaynaklar.Count -gt 0) {
   & $py -m py_compile @kaynaklar
   if ($LASTEXITCODE -ne 0) { Dur "Python sozdizimi hatasi - hicbir sey yayinlanmadi." }
   Write-Host "$($kaynaklar.Count) dosya temiz." -ForegroundColor Green
