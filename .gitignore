@@ -15,3 +15,16 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# --- Eklenen ortak kurallar (AI altyapi kurulumu) ---
+# Kimlik bilgileri
+.env.*
+client_secret*.json
+service_account*.json
+.clasprc.json
+# Windows / OneDrive / Office artiklari
+desktop.ini
+~$*
+*.tmp
+# Claude Code kisisel ayarlari (mutlak yollar, makineye ozel izin listesi)
+.claude/settings.local.json
